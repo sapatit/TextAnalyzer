@@ -5,6 +5,7 @@ import argparse
 from typing import List, Dict, Optional, Tuple, Any
 from functools import lru_cache
 from abc import ABC, abstractmethod
+import re
 
 
 # Настройка логирования
@@ -16,8 +17,11 @@ class TextProcessor:
     @lru_cache(maxsize=None)  # Кэширование результатов обработки текста
     def _process_text(self, text: str) -> List[str]:
         text = text.lower()
+        # Удаляем знаки препинания, кроме дефиса
         text = text.translate(str.maketrans('', '', string.punctuation.replace('-', '')))
-        return text.split()
+        # Используем регулярное выражение для фильтрации слов, состоящих только из букв (включая кириллицу)
+        words = re.findall(r'\b[a-zA-Zа-яА-ЯёЁ-]+\b', text)
+        return words
 
 
 class WordCounter:
@@ -25,9 +29,17 @@ class WordCounter:
         self.all_words: Dict[str, Counter] = {}
 
     def add_words(self, file_name: str, words: List[str]) -> None:
+        if words is None:
+            raise TypeError("words cannot be None")
+        if not isinstance(words, list):
+            raise TypeError("words must be a list")
+
         if file_name not in self.all_words:
             self.all_words[file_name] = Counter()
-        self.all_words[file_name].update(words)
+
+        # Приводим все слова к нижнему регистру перед обновлением
+        lower_case_words = [word.lower() for word in words if word.isalpha()]  # Игнорируем неалфавитные слова
+        self.all_words[file_name].update(lower_case_words)
 
     def get_all_words(self) -> Dict[str, Counter]:
         return self.all_words
@@ -62,6 +74,12 @@ class BaseWordsFinder(ABC):
 
 class FileWordsFinder(BaseWordsFinder):
     def __init__(self, *file_names: str, encoding: str = 'utf-8') -> None:
+        """
+        Инициализация FileWordsFinder.
+
+        :param file_names: Имена файлов для обработки.
+        :param encoding: Кодировка файлов.
+        """
         self.file_names: Tuple[str, ...] = file_names
         self.encoding: str = encoding
         self.text_processor: TextProcessor = TextProcessor()
@@ -69,10 +87,14 @@ class FileWordsFinder(BaseWordsFinder):
         self.get_all_words()
 
     def get_all_words(self) -> None:
+        """Чтение всех слов из указанных файлов и добавление их в счетчик слов."""
         for file_name in self.file_names:
             try:
                 with open(file_name, 'r', encoding=self.encoding) as file:
                     text = file.read()
+                    if not text.strip():  # Проверка на пустой файл
+                        logging.warning(f"Файл {file_name} пуст.")
+                        continue
                     words = self.text_processor._process_text(text)
                     self.word_counter.add_words(file_name, words)
             except FileNotFoundError:
@@ -83,30 +105,37 @@ class FileWordsFinder(BaseWordsFinder):
                 self.handle_error(file_name, str(e))
 
     def find(self, word: str) -> Dict[str, int]:
+        """Поиск слова в файлах."""
         return self.word_counter.count_word_occurrences(word)
 
     def count_word_occurrences(self, word: str) -> Dict[str, int]:
+        """Подсчет вхождений слова в файлах."""
         return self.word_counter.count_word_occurrences(word)
 
     def count_all_words(self) -> Dict[str, Counter]:
+        """Получение всех слов и их количества из файлов."""
         return self.word_counter.get_all_words()
 
     def filter_words(self, min_length: int = 0, starts_with: Optional[str] = None) -> Dict[str, List[str]]:
+        """Фильтрация слов по минимальной длине и начальным символам."""
         filtered_words: Dict[str, List[str]] = {}
         for file_name, counter in self.word_counter.get_all_words().items():
-            filtered_words[file_name] = [word for word in counter if len(word) >= min_length and
-                                         (starts_with is None or word.startswith(starts_with))]
+            filtered_words[file_name] = [
+                word for word in counter if len(word) >= min_length and
+                                            (starts_with is None or word.startswith(starts_with))
+            ]
         return filtered_words
 
     def sort_results(self, all_word_counts: Dict[str, Counter], sort_by: str) -> Dict[str, Counter]:
+        """Сортировка результатов по частоте или в алфавитном порядке."""
         if sort_by == 'frequency':
-            return {k: v for k, v in
-                    sorted(all_word_counts.items(), key=lambda item: sum(item[1].values()), reverse=True)}
+            return dict(sorted(all_word_counts.items(), key=lambda item: sum(item[1].values()), reverse=True))
         elif sort_by == 'alphabetical':
             return dict(sorted(all_word_counts.items()))
         return all_word_counts
 
     def save_results(self, all_word_counts: Dict[str, Counter], output_file: str, format: str) -> None:
+        """Сохранение результатов в файл."""
         with open(output_file, 'w', encoding='utf-8') as f:
             if format == 'json':
                 import json
@@ -119,6 +148,7 @@ class FileWordsFinder(BaseWordsFinder):
                     f.write("\n")
 
     def handle_error(self, file_name: str, error_message: str) -> None:
+        """Обработка ошибок при работе с файлами."""
         logging.error(f"Ошибка при обработке файла {file_name}: {error_message}")
 
 
